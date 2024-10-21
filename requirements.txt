@@ -1,0 +1,8 @@
+imgui[full]
+pygame
+Flask
+Flask-SQLAlchemy
+scikit-learn
+pandas
+requests
+psycopg2-binary
