@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView
-from PyQt5.QtCore import Qt  # Import Qt for table styling
+from PyQt5.QtCore import Qt, QThreadPool, QRunnable, pyqtSignal, QObject
 from pymongo import MongoClient
 import requests
 from .ml_models import SubnetPredictionModel
@@ -111,12 +111,70 @@ class AddIPDialog(QDialog):
         else:
             QMessageBox.warning(self, "Input Error", "Please fill out all fields.")
 
+class WorkerSignals(QObject):
+    """Defines the signals available from a running worker thread."""
+    success = pyqtSignal(list)   # Emitted when VLANs are successfully imported
+    error = pyqtSignal(str)      # Emitted when an error occurs
+
+
+class ImportVLANWorker(QRunnable):
+    """Worker thread for importing VLANs in the background."""
+    def __init__(self, base_url, headers, search_input):
+        super().__init__()
+        self.base_url = base_url
+        self.headers = headers
+        self.search_input = search_input
+        self.signals = WorkerSignals()
+
+
+    def run(self):
+        """Run the importing process in a separate thread."""
+        try:
+            vlan_url = f'{self.base_url}/api/ipam/vlans/?limit=5000'
+            vlan_response = requests.get(vlan_url, headers=self.headers, verify=False)
+            vlan_response.raise_for_status()
+            vlans = vlan_response.json().get('results', [])
+
+            filtered_vlans = []
+            for vlan in vlans:
+                vlan_id = vlan['id']
+                vlan_name = vlan['name']
+                vlan_site = vlan['site']['display'] if vlan.get('site') else 'No site'
+                vlan_tenant = vlan['tenant']['display'] if vlan.get('tenant') else 'No tenant'
+                vlan_status = vlan['status']['label'] if 'status' in vlan else 'Unknown'
+                vlan_description = vlan.get('description', 'No description')
+
+                if self.search_input not in vlan_name:
+                    continue
+
+                # Fetch prefixes for this VLAN
+                prefixes_url = f'{self.base_url}/api/ipam/prefixes/?vlan_id={vlan_id}'
+                prefix_response = requests.get(prefixes_url, headers=self.headers, verify=False)
+                prefix_response.raise_for_status()
+                prefixes = [prefix['prefix'] for prefix in prefix_response.json().get('results', [])]
+
+                filtered_vlans.append({
+                    'name': vlan_name,
+                    'site': vlan_site,
+                    'tenant': vlan_tenant,
+                    'prefixes': prefixes,
+                    'status': vlan_status,
+                    'description': vlan_description
+                })
+
+            self.signals.success.emit(filtered_vlans)
+
+        except Exception as e:
+            self.signals.error.emit(str(e))
 
 class IPAddressManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IP Address Management")
         self.setGeometry(100, 100, 600, 400)
+
+         # Initialize thread pool
+        self.thread_pool = QThreadPool()
 
         # Create main layout
         self.main_layout = QVBoxLayout()
@@ -174,9 +232,9 @@ class IPAddressManager(QMainWindow):
         self.search_label = QLabel("Search by name:")
         self.search_input = QLineEdit()
         self.search_button = QPushButton("Search")
-        self.search_button.clicked.connect(self.import_vlans)
+        self.search_button.clicked.connect(self.start_import)
         self.import_vlan_button = QPushButton("Import VLANs")
-        self.import_vlan_button.clicked.connect(self.import_vlans)
+        self.import_vlan_button.clicked.connect(self.start_import)
         layout.addWidget(self.import_vlan_button)
         layout.addWidget(self.search_label)
         layout.addWidget(self.search_input)
@@ -185,60 +243,51 @@ class IPAddressManager(QMainWindow):
         # Create a table to display VLANs and prefixes
         self.vlan_table = QTableWidget()
         self.vlan_table.setColumnCount(5)
-        self.vlan_table.setHorizontalHeaderLabels(["VLAN Name", "VID", "Prefixes", "Status", "Description"])
+        self.vlan_table.setHorizontalHeaderLabels(["VLAN Name", "Site", "Tenant", "Prefixes", "Status", "Description"])
         layout.addWidget(self.vlan_table)
 
         self.vlan_tab.setLayout(layout)
 
-    def import_vlans(self):
-        try:
-            # Fetch VLAN data from NetBox
-            base_url = 'https://netbox.cit.insea.io'
-            headers = {
-                'Authorization': 'Token e3d318664caba8355bcea30a00237ae38c02b357',  # Replace with your API token
-            }
+    def start_import(self):
+        """Start the VLAN importing process in a separate thread."""
+        base_url = "https://netbox.cit.insea.io"
+        headers = {
+            'Authorization': 'Token e3d318664caba8355bcea30a00237ae38c02b357',  # Replace with your API token
+        }
 
-            # Step 1: Fetch VLANs
-            vlan_url = f'{base_url}/api/ipam/vlans/?limit=5000'
-            vlan_response = requests.get(vlan_url, headers=headers, verify=False)
-            vlan_response.raise_for_status()
-            vlans = vlan_response.json().get('results', [])
+        search_term = self.search_input.text()
 
-            # Clear current table rows
-            self.vlan_table.setRowCount(0)
+        # Create a worker for importing VLANs
+        worker = ImportVLANWorker(base_url, headers, search_term)
+        worker.signals.success.connect(self.update_table)
+        worker.signals.error.connect(self.show_error)
 
-            # Iterate over VLANs and store each in the table
-            for vlan in vlans:
-                vlan_id = vlan['id']
-                vlan_name = vlan['name']
-                vlan_vid = vlan['vid']
-                vlan_status = vlan['status']['label'] if 'status' in vlan else 'Unknown'
-                vlan_description = vlan.get('description', 'No description')
+        # Execute the worker in a separate thread
+        self.thread_pool.start(worker)
 
-                if self.search_input.text() not in vlan_name:
-                    continue
+    def update_table(self, vlans):
+        """Update the table with imported VLANs."""
+        self.vlan_table.setRowCount(0)  # Clear current table
 
-                # Fetch prefixes for this VLAN
-                prefixes_url = f'{base_url}/api/ipam/prefixes/?vlan_id={vlan_id}'
-                prefix_response = requests.get(prefixes_url, headers=headers, verify=False)
-                prefix_response.raise_for_status()
-                prefixes = [prefix['prefix'] for prefix in prefix_response.json().get('results', [])]
+        for vlan in vlans:
+            row_position = self.vlan_table.rowCount()
+            self.vlan_table.insertRow(row_position)
 
-                # Insert row in the table
-                row_position = self.vlan_table.rowCount()
-                self.vlan_table.insertRow(row_position)
+            # Add data to table cells
+            self.vlan_table.setItem(row_position, 0, QTableWidgetItem(vlan['name']))
+            self.vlan_table.setItem(row_position, 1, QTableWidgetItem(vlan['site']))  # Site column
+            self.vlan_table.setItem(row_position, 2, QTableWidgetItem(vlan['tenant']))  # Tenant column
+            self.vlan_table.setItem(row_position, 3, QTableWidgetItem(", ".join(vlan['prefixes'])))
+            self.vlan_table.setItem(row_position, 4, QTableWidgetItem(vlan['status']))
+            self.vlan_table.setItem(row_position, 5, QTableWidgetItem(vlan['description']))
 
-                # Add data to table cells
-                self.vlan_table.setItem(row_position, 0, QTableWidgetItem(vlan_name))
-                self.vlan_table.setItem(row_position, 1, QTableWidgetItem(str(vlan_vid)))
-                self.vlan_table.setItem(row_position, 2, QTableWidgetItem(", ".join(prefixes)))
-                self.vlan_table.setItem(row_position, 3, QTableWidgetItem(vlan_status))
-                self.vlan_table.setItem(row_position, 4, QTableWidgetItem(vlan_description))
 
-            QMessageBox.information(self, "Success", "VLANs imported successfully!")
+        QMessageBox.information(self, "Success", "VLANs imported successfully!")
 
-        except requests.exceptions.RequestException as e:
-            QMessageBox.critical(self, "Import Error", f"Failed to import VLANs: {e}")
+    def show_error(self, error_message):
+        """Display an error message if the import fails."""
+        QMessageBox.critical(self, "Import Error", f"Failed to import VLANs: {error_message}")
+
 
 
 
@@ -271,7 +320,7 @@ class IPAddressManager(QMainWindow):
                         current_department = department
                         self.ip_table.insertRow(row_position)
                         department_item = QTableWidgetItem(f"Department: {current_department}")
-                        department_item.setBackground(Qt.lightGray)  # Set department header background color
+                        department_item.setBackground(Qt.darkGray)  # Set department header background color
                         self.ip_table.setItem(row_position, 0, department_item)
                         self.ip_table.setSpan(row_position, 0, 1, 3)  # Span across all columns
                         row_position += 1
