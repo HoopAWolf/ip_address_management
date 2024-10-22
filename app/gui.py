@@ -52,7 +52,13 @@ class AddIPDialog(QDialog):
         self.setLayout(layout)
 
     def predict_subnet(self):
-        num_hosts = int(self.num_hosts_input.text())
+        num_hosts = None
+        if len(self.num_hosts_input.text()) != 0:
+            num_hosts = int(self.num_hosts_input.text())
+        else:
+            num_hosts = self.subnet_model.calculate_hosts_from_subnet(self.ip_input.text())
+            if num_hosts == None:
+                num_hosts = 0
         department = self.department_input.text()
 
         # First, try to predict using the machine learning model
@@ -165,9 +171,16 @@ class IPAddressManager(QMainWindow):
         layout = QVBoxLayout()
 
         # Add button to import VLANs
+        self.search_label = QLabel("Search by name:")
+        self.search_input = QLineEdit()
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self.import_vlans)
         self.import_vlan_button = QPushButton("Import VLANs")
         self.import_vlan_button.clicked.connect(self.import_vlans)
         layout.addWidget(self.import_vlan_button)
+        layout.addWidget(self.search_label)
+        layout.addWidget(self.search_input)
+        layout.addWidget(self.search_button)
 
         # Create a table to display VLANs and prefixes
         self.vlan_table = QTableWidget()
@@ -186,7 +199,7 @@ class IPAddressManager(QMainWindow):
             }
 
             # Step 1: Fetch VLANs
-            vlan_url = f'{base_url}/api/ipam/vlans/?per_page=1000'
+            vlan_url = f'{base_url}/api/ipam/vlans/?limit=5000'
             vlan_response = requests.get(vlan_url, headers=headers, verify=False)
             vlan_response.raise_for_status()
             vlans = vlan_response.json().get('results', [])
@@ -201,6 +214,9 @@ class IPAddressManager(QMainWindow):
                 vlan_vid = vlan['vid']
                 vlan_status = vlan['status']['label'] if 'status' in vlan else 'Unknown'
                 vlan_description = vlan.get('description', 'No description')
+
+                if self.search_input.text() not in vlan_name:
+                    continue
 
                 # Fetch prefixes for this VLAN
                 prefixes_url = f'{base_url}/api/ipam/prefixes/?vlan_id={vlan_id}'
