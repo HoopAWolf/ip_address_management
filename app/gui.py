@@ -1,10 +1,10 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView
 from PyQt5.QtCore import Qt  # Import Qt for table styling
 from pymongo import MongoClient
-from .db import netbox
 import requests
-import certifi
+from .ml_models import SubnetPredictionModel
+
 
 
 class AddIPDialog(QDialog):
@@ -12,6 +12,10 @@ class AddIPDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add IP Address")
         self.setGeometry(150, 150, 300, 200)
+
+        # Initialize the subnet prediction model
+        self.subnet_model = SubnetPredictionModel()
+        self.subnet_model.train_model()  # Train the model upon initialization
 
         # Create form inputs
         self.ip_label = QLabel("IP Address:")
@@ -48,17 +52,21 @@ class AddIPDialog(QDialog):
         self.setLayout(layout)
 
     def predict_subnet(self):
+        num_hosts = int(self.num_hosts_input.text())
+        department = self.department_input.text()
+
+        # First, try to predict using the machine learning model
         try:
-            # Simulate the ML prediction logic
-            num_hosts = int(self.num_hosts_input.text())
-            department = self.department_input.text()
-            subnet_size = self.subnet_model_predict(num_hosts, department)
-            self.subnet_output.setText(f"Predicted Subnet: {subnet_size}")
-        except ValueError:
-            QMessageBox.warning(self, "Input Error", "Please enter a valid number of hosts.")
-    
+            predicted_subnet = self.subnet_model.predict_subnet(num_hosts, department)
+            self.subnet_output.setText(f"Predicted Subnet: {predicted_subnet}")
+        except Exception as e:
+            print(f"ML Model prediction failed: {e}")
+            # Fallback to basic logic if ML model fails
+            predicted_subnet = self.subnet_model_predict(num_hosts, department)
+            self.subnet_output.setText(f"Predicted Subnet: {predicted_subnet}")
+
     def subnet_model_predict(self, num_hosts, department):
-        # Placeholder prediction logic for subnet size based on department
+        """Fallback logic for predicting subnet size based on department."""
         if department.lower() == "it":
             return "/24" if num_hosts <= 254 else "/16"
         elif department.lower() == "hr":
@@ -84,6 +92,12 @@ class AddIPDialog(QDialog):
                     'assigned_to': assigned_to
                 })
 
+                # Clear input fields
+                self.ip_input.clear()
+                self.num_hosts_input.clear()
+                self.department_input.clear()
+                self.subnet_output.setText("---")
+
                 QMessageBox.information(self, "Success", "IP Address assigned successfully!")
                 self.accept()  # Close the dialog on success
             except Exception as e:
@@ -98,7 +112,32 @@ class IPAddressManager(QMainWindow):
         self.setWindowTitle("IP Address Management")
         self.setGeometry(100, 100, 600, 400)
 
-        # Create Widgets
+        # Create main layout
+        self.main_layout = QVBoxLayout()
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        self.main_layout.addWidget(self.tab_widget)
+
+        # Create first tab (for IP addresses)
+        self.ip_tab = QWidget()
+        self.tab_widget.addTab(self.ip_tab, "IP Addresses")
+        self.setup_ip_tab()
+
+        # Create second tab (for VLANs)
+        self.vlan_tab = QWidget()
+        self.tab_widget.addTab(self.vlan_tab, "VLANs")
+        self.setup_vlan_tab()
+
+        # Set main layout
+        container = QWidget()
+        container.setLayout(self.main_layout)
+        self.setCentralWidget(container)
+
+    def setup_ip_tab(self):
+        layout = QVBoxLayout()
+
+         # Create Widgets
         self.ip_table = QTableWidget()
         self.ip_table.setColumnCount(2)
         self.ip_table.setHorizontalHeaderLabels(["IP Address", "Subnet"])
@@ -107,9 +146,6 @@ class IPAddressManager(QMainWindow):
         self.update_button = QPushButton("Update List")
         self.update_button.clicked.connect(self.update_ip_list)
 
-        self.import_vlans_button = QPushButton("Import VLANs from NetBox")
-        self.import_vlans_button.clicked.connect(self.import_vlans)
-
         self.add_button = QPushButton("Add IP Address")
         self.add_button.clicked.connect(self.show_add_ip_dialog)
 
@@ -117,47 +153,77 @@ class IPAddressManager(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.ip_table)
         layout.addWidget(self.update_button)
-        layout.addWidget(self.import_vlans_button)
         layout.addWidget(self.add_button)
 
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
 
-        # Initial List Update
-        self.update_ip_list()
+        self.ip_tab.setLayout(layout)
+
+    def setup_vlan_tab(self):
+        layout = QVBoxLayout()
+
+        # Add button to import VLANs
+        self.import_vlan_button = QPushButton("Import VLANs")
+        self.import_vlan_button.clicked.connect(self.import_vlans)
+        layout.addWidget(self.import_vlan_button)
+
+        # Create a table to display VLANs and prefixes
+        self.vlan_table = QTableWidget()
+        self.vlan_table.setColumnCount(5)
+        self.vlan_table.setHorizontalHeaderLabels(["VLAN Name", "VID", "Prefixes", "Status", "Description"])
+        layout.addWidget(self.vlan_table)
+
+        self.vlan_tab.setLayout(layout)
 
     def import_vlans(self):
         try:
-            url = 'https://netbox.cit.insea.io/api/ipam/vlans/'
+            # Fetch VLAN data from NetBox
+            base_url = 'https://netbox.cit.insea.io'
             headers = {
-                'Authorization': 'Token e3d318664caba8355bcea30a00237ae38c02b357'  # Replace with your API token
+                'Authorization': 'Token e3d318664caba8355bcea30a00237ae38c02b357',  # Replace with your API token
             }
-            response = requests.get(url, headers=headers, verify=False)  # Disable SSL verification for testing
-            response.raise_for_status()  # Raise an error for bad responses
 
-            vlans = response.json().get('results', [])
+            # Step 1: Fetch VLANs
+            vlan_url = f'{base_url}/api/ipam/vlans/?per_page=1000'
+            vlan_response = requests.get(vlan_url, headers=headers, verify=False)
+            vlan_response.raise_for_status()
+            vlans = vlan_response.json().get('results', [])
+
+            # Clear current table rows
+            self.vlan_table.setRowCount(0)
+
+            # Iterate over VLANs and store each in the table
             for vlan in vlans:
-                prefixes = []
-                if 'prefixes' in vlan and vlan['prefixes']:
-                    for prefix in vlan['prefixes']:
-                        prefixes.append(prefix['prefix'])
+                vlan_id = vlan['id']
+                vlan_name = vlan['name']
+                vlan_vid = vlan['vid']
+                vlan_status = vlan['status']['label'] if 'status' in vlan else 'Unknown'
+                vlan_description = vlan.get('description', 'No description')
 
-                vlan_data = {
-                    'name': vlan['name'],
-                    'vid': vlan['vid'],
-                    'prefixes': prefixes,
-                    'status': vlan['status']['label'] if 'status' in vlan else 'Unknown',
-                    'description': vlan.get('description', 'No description')
-                }
+                # Fetch prefixes for this VLAN
+                prefixes_url = f'{base_url}/api/ipam/prefixes/?vlan_id={vlan_id}'
+                prefix_response = requests.get(prefixes_url, headers=headers, verify=False)
+                prefix_response.raise_for_status()
+                prefixes = [prefix['prefix'] for prefix in prefix_response.json().get('results', [])]
 
-                print("IP: " + str(vlan_data['prefixes']) + " Name: " + vlan_data['name'] +
-                    " Status: " + vlan_data['status'] + " Desc: " + vlan_data['description'] + "\n")
+                # Insert row in the table
+                row_position = self.vlan_table.rowCount()
+                self.vlan_table.insertRow(row_position)
 
-            print("VLANs imported successfully.")
+                # Add data to table cells
+                self.vlan_table.setItem(row_position, 0, QTableWidgetItem(vlan_name))
+                self.vlan_table.setItem(row_position, 1, QTableWidgetItem(str(vlan_vid)))
+                self.vlan_table.setItem(row_position, 2, QTableWidgetItem(", ".join(prefixes)))
+                self.vlan_table.setItem(row_position, 3, QTableWidgetItem(vlan_status))
+                self.vlan_table.setItem(row_position, 4, QTableWidgetItem(vlan_description))
+
+            QMessageBox.information(self, "Success", "VLANs imported successfully!")
 
         except requests.exceptions.RequestException as e:
-            print(f"Failed to import VLANs: {e}")
+            QMessageBox.critical(self, "Import Error", f"Failed to import VLANs: {e}")
+
 
 
     def update_ip_list(self):

@@ -10,3 +10,4 @@ netbox = pynetbox.api(NETBOX_URL, token=NETBOX_API_TOKEN)
 # Connect to MongoDB
 client = MongoClient('mongodb://localhost:27017/')
 db = client['ip_address_management']
+ip_addresses = db['ip_addresses']
