@@ -1,10 +1,54 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView, QComboBox
 from PyQt5.QtCore import Qt, QThreadPool, QRunnable, pyqtSignal, QObject
 from pymongo import MongoClient
 import requests
 from .ml_models import SubnetPredictionModel
 
+class LoginDialog(QDialog):
+    """Login Dialog to input base URL and API token."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Login")
+        self.setGeometry(150, 150, 300, 150)
+
+        # Labels and inputs
+        self.url_label = QLabel("Base URL:")
+        self.url_input = QLineEdit()
+        self.url_input.setText('https://demo.netbox.dev')
+
+        self.token_label = QLabel("API Token:")
+        self.token_input = QLineEdit()
+        self.token_input.setEchoMode(QLineEdit.Password)
+
+        # Buttons
+        self.login_button = QPushButton("Login")
+        self.login_button.clicked.connect(self.accept_login)
+
+        # Layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.url_label)
+        layout.addWidget(self.url_input)
+        layout.addWidget(self.token_label)
+        layout.addWidget(self.token_input)
+        layout.addWidget(self.login_button)
+        self.setLayout(layout)
+
+        # Variables to hold base URL and token
+        self.base_url = None
+        self.token = None
+
+    def accept_login(self):
+        """Validate and store the input, then accept the dialog."""
+        base_url = self.url_input.text().strip()
+        token = self.token_input.text().strip()
+
+        if base_url and token:
+            self.base_url = base_url
+            self.token = token
+            self.accept()  # Close dialog
+        else:
+            QMessageBox.warning(self, "Input Error", "Please provide both Base URL and API Token.")
 
 
 class AddIPDialog(QDialog):
@@ -24,8 +68,9 @@ class AddIPDialog(QDialog):
         self.num_hosts_label = QLabel("Number of Hosts:")
         self.num_hosts_input = QLineEdit()
 
-        self.department_label = QLabel("Department:")
-        self.department_input = QLineEdit()
+        self.group_label = QLabel("Group:")
+        self.group_input = QComboBox()
+        self.group_input.addItems(["Office IPs", "IDC IPs", "Warehouse IPs"])
 
         self.subnet_label = QLabel("Predicted Subnet Size:")
         self.subnet_output = QLabel("---")
@@ -42,8 +87,8 @@ class AddIPDialog(QDialog):
         layout.addWidget(self.ip_input)
         layout.addWidget(self.num_hosts_label)
         layout.addWidget(self.num_hosts_input)
-        layout.addWidget(self.department_label)
-        layout.addWidget(self.department_input)
+        layout.addWidget(self.group_label)
+        layout.addWidget(self.group_input)
         layout.addWidget(self.predict_button)
         layout.addWidget(self.subnet_label)
         layout.addWidget(self.subnet_output)
@@ -57,51 +102,57 @@ class AddIPDialog(QDialog):
             num_hosts = int(self.num_hosts_input.text())
         else:
             num_hosts = self.subnet_model.calculate_hosts_from_subnet(self.ip_input.text())
-            if num_hosts == None:
+            if num_hosts is None:
                 num_hosts = 0
-        department = self.department_input.text()
+
+        group = self.group_input.currentText()  # Get the group from the input
 
         # First, try to predict using the machine learning model
         try:
-            predicted_subnet = self.subnet_model.predict_subnet(num_hosts, department)
+            predicted_subnet = self.subnet_model.predict_subnet(num_hosts, group)  # Pass both num_hosts and group
             self.subnet_output.setText(f"Predicted Subnet: {predicted_subnet}")
         except Exception as e:
             print(f"ML Model prediction failed: {e}")
             # Fallback to basic logic if ML model fails
-            predicted_subnet = self.subnet_model_predict(num_hosts, department)
+            predicted_subnet = self.subnet_model_predict(num_hosts)  # Adjust if you need a group fallback
             self.subnet_output.setText(f"Predicted Subnet: {predicted_subnet}")
 
-    def subnet_model_predict(self, num_hosts, department):
-        """Fallback logic for predicting subnet size based on department."""
-        if department.lower() == "it":
-            return "/24" if num_hosts <= 254 else "/16"
-        elif department.lower() == "hr":
-            return "/26" if num_hosts <= 62 else "/24"
+
+
+
+    def subnet_model_predict(self, num_hosts):
+        """Fallback logic for predicting subnet size based on number of hosts."""
+        if num_hosts <= 14:
+            return "/28"  # Suitable for 14 hosts
+        elif num_hosts <= 62:
+            return "/26"  # Suitable for 62 hosts
+        elif num_hosts <= 254:
+            return "/24"  # Suitable for 254 hosts
         else:
-            return "/28" if num_hosts <= 14 else "/24"
+            return "/16"  # Default to /16 for larger host requirements
+
 
     def assign_ip(self):
         ip_address = self.ip_input.text()
-        assigned_to = self.department_input.text()
         subnet = self.subnet_output.text().replace("Predicted Subnet: ", "")
 
-        if ip_address and subnet and assigned_to:
+        if ip_address and subnet:
             try:
                 client = MongoClient('mongodb://localhost:27017/')
                 db = client['ip_address_management']
                 collection = db['ip_addresses']
+                group = self.group_input.currentText()
 
-                # Insert the new IP address document into MongoDB
+                # Add group to MongoDB document
                 collection.insert_one({
                     'address': ip_address,
                     'subnet': subnet,
-                    'assigned_to': assigned_to
+                    'group': group  # Store group type in MongoDB
                 })
 
                 # Clear input fields
                 self.ip_input.clear()
                 self.num_hosts_input.clear()
-                self.department_input.clear()
                 self.subnet_output.setText("---")
 
                 QMessageBox.information(self, "Success", "IP Address assigned successfully!")
@@ -168,8 +219,10 @@ class ImportVLANWorker(QRunnable):
             self.signals.error.emit(str(e))
 
 class IPAddressManager(QMainWindow):
-    def __init__(self):
+    def __init__(self, base_url, api_token):
         super().__init__()
+        self.base_url = base_url
+        self.api_token = api_token
         self.setWindowTitle("IP Address Management")
         self.setGeometry(100, 100, 600, 400)
 
@@ -235,10 +288,17 @@ class IPAddressManager(QMainWindow):
         self.search_button.clicked.connect(self.start_import)
         self.import_vlan_button = QPushButton("Import VLANs")
         self.import_vlan_button.clicked.connect(self.start_import)
+
+        # Initialize the 'Loading...' label
+        self.loading_label = QLabel("Loading...", self)
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        self.loading_label.setVisible(False)  # Hide initially
+
         layout.addWidget(self.import_vlan_button)
         layout.addWidget(self.search_label)
         layout.addWidget(self.search_input)
         layout.addWidget(self.search_button)
+        layout.addWidget(self.loading_label)
 
         # Create a table to display VLANs and prefixes
         self.vlan_table = QTableWidget()
@@ -248,17 +308,25 @@ class IPAddressManager(QMainWindow):
 
         self.vlan_tab.setLayout(layout)
 
+    def start_loading(self):
+        """Show the loading message when a task starts."""
+        self.loading_label.setVisible(True)  # Show 'Loading...' message
+
+    def stop_loading(self):
+        """Hide the loading message when the task completes."""
+        self.loading_label.setVisible(False)  # Hide 'Loading...' message
+
     def start_import(self):
+        self.start_loading()
         """Start the VLAN importing process in a separate thread."""
-        base_url = "https://netbox.cit.insea.io"
         headers = {
-            'Authorization': 'Token e3d318664caba8355bcea30a00237ae38c02b357',  # Replace with your API token
+            'Authorization': 'Token ' + self.api_token,  # Replace with your API token
         }
 
         search_term = self.search_input.text()
 
         # Create a worker for importing VLANs
-        worker = ImportVLANWorker(base_url, headers, search_term)
+        worker = ImportVLANWorker(self.base_url, headers, search_term)
         worker.signals.success.connect(self.update_table)
         worker.signals.error.connect(self.show_error)
 
@@ -281,8 +349,7 @@ class IPAddressManager(QMainWindow):
             self.vlan_table.setItem(row_position, 4, QTableWidgetItem(vlan['status']))
             self.vlan_table.setItem(row_position, 5, QTableWidgetItem(vlan['description']))
 
-
-        QMessageBox.information(self, "Success", "VLANs imported successfully!")
+        self.stop_loading()
 
     def show_error(self, error_message):
         """Display an error message if the import fails."""
@@ -299,11 +366,11 @@ class IPAddressManager(QMainWindow):
             db = client['ip_address_management']
             collection = db['ip_addresses']
 
-            # Fetch IP addresses, group them by department
-            ip_addresses = list(collection.find({}, {'address': 1, 'subnet': 1, 'assigned_to': 1, '_id': 0}))
-            ip_addresses.sort(key=lambda x: x['assigned_to'])  # Sort by department
+            # Fetch IP addresses, group them by 'group'
+            ip_addresses = list(collection.find({}, {'address': 1, 'subnet': 1, 'group': 1, '_id': 0}))
+            ip_addresses.sort(key=lambda x: x['group'])  # Sort by group
 
-            current_department = None
+            current_group = None
             row_position = 0
 
             # Check if list is empty
@@ -313,15 +380,15 @@ class IPAddressManager(QMainWindow):
                 self.ip_table.setSpan(0, 0, 1, 3)
             else:
                 for ip in ip_addresses:
-                    department = ip.get('assigned_to', 'No Department')
+                    group = ip.get('group', 'No Group')
 
-                    # Add department header row
-                    if department != current_department:
-                        current_department = department
+                    # Add group header row
+                    if group != current_group:
+                        current_group = group
                         self.ip_table.insertRow(row_position)
-                        department_item = QTableWidgetItem(f"Department: {current_department}")
-                        department_item.setBackground(Qt.darkGray)  # Set department header background color
-                        self.ip_table.setItem(row_position, 0, department_item)
+                        group_item = QTableWidgetItem(f"Group: {current_group}")
+                        group_item.setBackground(Qt.darkGray)  # Set group header background color
+                        self.ip_table.setItem(row_position, 0, group_item)
                         self.ip_table.setSpan(row_position, 0, 1, 3)  # Span across all columns
                         row_position += 1
 
@@ -334,6 +401,7 @@ class IPAddressManager(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to fetch IP addresses: {e}")
 
+
     def show_add_ip_dialog(self):
         dialog = AddIPDialog(self)
         if dialog.exec_() == QDialog.Accepted:
@@ -342,8 +410,11 @@ class IPAddressManager(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    window = IPAddressManager()
-    window.show()
+    login_dialog = LoginDialog()
+    if login_dialog.exec_() == QDialog.Accepted:
+        # Open main window after login
+        window = IPAddressManager(login_dialog.base_url, login_dialog.token)
+        window.show()
     sys.exit(app.exec_())
 
 
