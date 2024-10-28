@@ -59,6 +59,34 @@ class LoginDialog(QDialog):
             QMessageBox.warning(self, "Input Error", "Please provide both Base URL and API Token.")
 
 
+class AddLocationDialog(QDialog): 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add New Location")
+        self.setGeometry(150, 150, 300, 200)
+
+        # Create form inputs
+        self.location_label = QLabel("Location name:")
+        self.location_input = QLineEdit()
+
+        self.add_button = QPushButton("Add Location")
+        self.add_button.clicked.connect(self.assign_location)
+
+        # Set layout
+        layout = QVBoxLayout()
+        layout.addWidget(self.location_label)
+        layout.addWidget(self.location_input)
+        layout.addWidget(self.add_button)
+
+        self.setLayout(layout)
+
+    def assign_location(self):
+        location = self.location_input.text()
+        if location:  # Ensure there's text to add
+            # Assuming AddIPDialog.groupList is a QComboBox or QListWidget
+            self.parent().group_input.addItem(location)  # Add location to groupList in AddIPDialog
+            self.close()  # Close dialog after adding
+
 class AddIPDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -80,6 +108,9 @@ class AddIPDialog(QDialog):
         self.group_input = QComboBox()
         self.group_input.addItems(["Office IPs", "IDC IPs", "Warehouse IPs"])
 
+        self.add_location_button = QPushButton("Add Location")
+        self.add_location_button.clicked.connect(self.open_add_location_dialog)
+
         self.subnet_label = QLabel("Subnet:")
         self.subnet_output = QLineEdit()
 
@@ -97,8 +128,9 @@ class AddIPDialog(QDialog):
         layout.addWidget(self.num_hosts_input)
         layout.addWidget(self.group_label)
         layout.addWidget(self.group_input)
-        layout.addWidget(self.predict_button)
+        layout.addWidget(self.add_location_button)
         layout.addWidget(self.subnet_label)
+        layout.addWidget(self.predict_button)
         layout.addWidget(self.subnet_output)
         layout.addWidget(self.assign_button)
 
@@ -125,8 +157,9 @@ class AddIPDialog(QDialog):
             predicted_subnet = self.subnet_model_predict(num_hosts)  # Adjust if you need a group fallback
             self.subnet_output.setText(f"{predicted_subnet}")
 
-
-
+    def open_add_location_dialog(self):
+        dialog = AddLocationDialog(self)
+        dialog.exec_()
 
     def subnet_model_predict(self, num_hosts):
         """Fallback logic for predicting subnet size based on number of hosts."""
@@ -320,6 +353,7 @@ class IPAddressManager(QMainWindow):
         layout.addWidget(self.search_address_input)
         layout.addWidget(self.ip_table)
         layout.addWidget(self.update_button)
+        layout.addWidget(self.add_button)
 
         container = QWidget()
         container.setLayout(layout)
