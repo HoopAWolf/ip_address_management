@@ -4,6 +4,14 @@ from PyQt5.QtCore import Qt, QThreadPool, QRunnable, pyqtSignal, QObject
 from pymongo import MongoClient
 import requests
 from .ml_models import SubnetPredictionModel
+import ipaddress
+
+def is_public_ip(ip):
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        return not ip_obj.is_private  # Returns True if the IP is public
+    except ValueError:
+        return False  # Invalid IP
 
 class LoginDialog(QDialog):
     """Login Dialog to input base URL and API token."""
@@ -72,8 +80,8 @@ class AddIPDialog(QDialog):
         self.group_input = QComboBox()
         self.group_input.addItems(["Office IPs", "IDC IPs", "Warehouse IPs"])
 
-        self.subnet_label = QLabel("Predicted Subnet Size:")
-        self.subnet_output = QLabel("---")
+        self.subnet_label = QLabel("Subnet:")
+        self.subnet_output = QLineEdit()
 
         self.predict_button = QPushButton("Predict Subnet")
         self.predict_button.clicked.connect(self.predict_subnet)
@@ -110,12 +118,12 @@ class AddIPDialog(QDialog):
         # First, try to predict using the machine learning model
         try:
             predicted_subnet = self.subnet_model.predict_subnet(num_hosts, group)  # Pass both num_hosts and group
-            self.subnet_output.setText(f"Predicted Subnet: {predicted_subnet}")
+            self.subnet_output.setText(f"{predicted_subnet}")
         except Exception as e:
             print(f"ML Model prediction failed: {e}")
             # Fallback to basic logic if ML model fails
             predicted_subnet = self.subnet_model_predict(num_hosts)  # Adjust if you need a group fallback
-            self.subnet_output.setText(f"Predicted Subnet: {predicted_subnet}")
+            self.subnet_output.setText(f"{predicted_subnet}")
 
 
 
@@ -131,10 +139,47 @@ class AddIPDialog(QDialog):
         else:
             return "/16"  # Default to /16 for larger host requirements
 
+    def is_subnet_available(self, subnet):
+        try:
+            # Connect to MongoDB
+            client = MongoClient('mongodb://localhost:27017/')
+            db = client['ip_address_management']
+            collection = db['ip_addresses']
+
+            # Fetch all IP addresses and subnets from the database
+            ip_addresses = list(collection.find({}, {'address': 1, 'subnet': 1, '_id': 0}))
+
+            # Check if the requested subnet overlaps with any existing subnet
+            requested_network = ipaddress.ip_network(subnet, strict=False)
+
+            for ip_data in ip_addresses:
+                existing_subnet = ip_data.get('address') + ip_data.get('subnet')
+                
+                if existing_subnet:
+                    existing_network = ipaddress.ip_network(existing_subnet, strict=False)
+                    if requested_network.overlaps(existing_network):
+                        QMessageBox.warning(self, "Subnet Unavailable", f"The subnet {subnet} is already in use.")
+                        return False  # Subnet is already in use
+
+            return True  # Subnet is available
+        except Exception as e:
+            print(f"Failed to check subnet availability: {e}")
+            QMessageBox.warning(self, "Failed to check subnet", f"{e}")
+            return False
 
     def assign_ip(self):
         ip_address = self.ip_input.text()
         subnet = self.subnet_output.text().replace("Predicted Subnet: ", "")
+
+        if is_public_ip(ip_address):
+            reply = QMessageBox.warning(self, "Public IP Warning", 
+                                        "The provided IP address is a public IP. Do you want to proceed?", 
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return  # Don't proceed if the user selects 'No'
+            
+        if not self.is_subnet_available(ip_address + subnet):
+            return  # Stop the process if the subnet is already in use
 
         if ip_address and subnet:
             try:
@@ -254,6 +299,9 @@ class IPAddressManager(QMainWindow):
     def setup_ip_tab(self):
         layout = QVBoxLayout()
 
+        self.search_address_label = QLabel("Search IP Address")
+        self.search_address_input = QLineEdit()
+
          # Create Widgets
         self.ip_table = QTableWidget()
         self.ip_table.setColumnCount(2)
@@ -268,9 +316,10 @@ class IPAddressManager(QMainWindow):
 
         # Set Layout
         layout = QVBoxLayout()
+        layout.addWidget(self.search_address_label)
+        layout.addWidget(self.search_address_input)
         layout.addWidget(self.ip_table)
         layout.addWidget(self.update_button)
-        layout.addWidget(self.add_button)
 
         container = QWidget()
         container.setLayout(layout)
@@ -338,6 +387,7 @@ class IPAddressManager(QMainWindow):
         self.vlan_table.setRowCount(0)  # Clear current table
 
         for vlan in vlans:
+
             row_position = self.vlan_table.rowCount()
             self.vlan_table.insertRow(row_position)
 
@@ -381,6 +431,9 @@ class IPAddressManager(QMainWindow):
             else:
                 for ip in ip_addresses:
                     group = ip.get('group', 'No Group')
+
+                    if self.search_address_input.text() not in ip.get('address', 'No Address Found'):
+                        continue
 
                     # Add group header row
                     if group != current_group:

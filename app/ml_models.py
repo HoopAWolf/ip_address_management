@@ -20,8 +20,6 @@ valid_subnets = {
     65534: "/16",
 }
 
-
-
 class SubnetPredictionModel:
     def __init__(self):
         self.model = LinearRegression()
