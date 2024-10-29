@@ -101,14 +101,19 @@ class AddIPDialog(QDialog):
         self.ip_label = QLabel("IP Address:")
         self.ip_input = QLineEdit()
 
+        self.location_name_label = QLabel("Location Name:")
+        self.location_name_input = QLineEdit()
+
         self.num_hosts_label = QLabel("Number of Hosts:")
         self.num_hosts_input = QLineEdit()
 
         self.group_label = QLabel("Group:")
         self.group_input = QComboBox()
-        self.group_input.addItems(["Office IPs", "IDC IPs", "Warehouse IPs"])
+        tempList = ["SG", "VN", "ID", "CN", "MY", "TW", "TH", "VNHCM", "VNHN", "PH", "CNSH", "CNSZ", "CNXM", "CNDG", "CNGZ", "CNYW", "CNNN", "CNHZ", "CNBJ", "DC", "BR", "KR", "USA"]
+        tempList.sort()
+        self.group_input.addItems(tempList)
 
-        self.add_location_button = QPushButton("Add Location")
+        self.add_location_button = QPushButton("Add Country")
         self.add_location_button.clicked.connect(self.open_add_location_dialog)
 
         self.subnet_label = QLabel("Subnet:")
@@ -124,6 +129,8 @@ class AddIPDialog(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self.ip_label)
         layout.addWidget(self.ip_input)
+        layout.addWidget(self.location_name_label)
+        layout.addWidget(self.location_name_input)
         layout.addWidget(self.num_hosts_label)
         layout.addWidget(self.num_hosts_input)
         layout.addWidget(self.group_label)
@@ -180,7 +187,7 @@ class AddIPDialog(QDialog):
             collection = db['ip_addresses']
 
             # Fetch all IP addresses and subnets from the database
-            ip_addresses = list(collection.find({}, {'address': 1, 'subnet': 1, '_id': 0}))
+            ip_addresses = list(collection.find({}, {'name': 1, 'address': 1, 'subnet': 1, '_id': 0}))
 
             # Check if the requested subnet overlaps with any existing subnet
             requested_network = ipaddress.ip_network(subnet, strict=False)
@@ -202,6 +209,7 @@ class AddIPDialog(QDialog):
 
     def assign_ip(self):
         ip_address = self.ip_input.text()
+        location_name = self.location_name_input.text()
         subnet = self.subnet_output.text().replace("Predicted Subnet: ", "")
 
         if is_public_ip(ip_address):
@@ -223,6 +231,7 @@ class AddIPDialog(QDialog):
 
                 # Add group to MongoDB document
                 collection.insert_one({
+                    'name': location_name,
                     'address': ip_address,
                     'subnet': subnet,
                     'group': group  # Store group type in MongoDB
@@ -337,8 +346,8 @@ class IPAddressManager(QMainWindow):
 
          # Create Widgets
         self.ip_table = QTableWidget()
-        self.ip_table.setColumnCount(2)
-        self.ip_table.setHorizontalHeaderLabels(["IP Address", "Subnet"])
+        self.ip_table.setColumnCount(3)
+        self.ip_table.setHorizontalHeaderLabels(["Name", "IP Address", "Subnet"])
         self.ip_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         self.update_button = QPushButton("Update List")
@@ -451,7 +460,7 @@ class IPAddressManager(QMainWindow):
             collection = db['ip_addresses']
 
             # Fetch IP addresses, group them by 'group'
-            ip_addresses = list(collection.find({}, {'address': 1, 'subnet': 1, 'group': 1, '_id': 0}))
+            ip_addresses = list(collection.find({}, {'name': 1, 'address': 1, 'subnet': 1, 'group': 1, '_id': 0}))
             ip_addresses.sort(key=lambda x: x['group'])  # Sort by group
 
             current_group = None
@@ -481,8 +490,9 @@ class IPAddressManager(QMainWindow):
 
                     # Add IP address details row
                     self.ip_table.insertRow(row_position)
-                    self.ip_table.setItem(row_position, 0, QTableWidgetItem(ip.get('address', 'No Address Found')))
-                    self.ip_table.setItem(row_position, 1, QTableWidgetItem(ip.get('subnet', 'No Subnet')))
+                    self.ip_table.setItem(row_position, 0, QTableWidgetItem(ip.get('name', 'No Name Found')))
+                    self.ip_table.setItem(row_position, 1, QTableWidgetItem(ip.get('address', 'No Address Found')))
+                    self.ip_table.setItem(row_position, 2, QTableWidgetItem(ip.get('subnet', 'No Subnet')))
                     row_position += 1
 
         except Exception as e:
