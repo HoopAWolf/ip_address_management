@@ -6,6 +6,8 @@ import requests
 from .ml_models import SubnetPredictionModel
 import ipaddress
 
+prefix_list = 0
+
 def is_public_ip(ip):
     try:
         ip_obj = ipaddress.ip_address(ip)
@@ -266,6 +268,7 @@ class ImportVLANWorker(QRunnable):
 
 
     def run(self):
+        global prefix_list
         """Run the importing process in a separate thread."""
         try:
             vlan_url = f'{self.base_url}/api/ipam/vlans/?limit=5000'
@@ -300,10 +303,55 @@ class ImportVLANWorker(QRunnable):
                     'description': vlan_description
                 })
 
+            prefix_list = filtered_vlans
             self.signals.success.emit(filtered_vlans)
 
         except Exception as e:
             self.signals.error.emit(str(e))
+
+class ImportPrefixWorker(QRunnable):
+    """Worker thread for importing VLANs in the background."""
+    def __init__(self, base_url, headers, search_input):
+        super().__init__()
+        self.base_url = base_url
+        self.headers = headers
+        self.search_input = search_input
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            # Define the URL for fetching prefixes
+            prefix_url = f'{self.base_url}/api/ipam/prefixes/?limit=5000'
+            prefix_response = requests.get(prefix_url, headers=self.headers, verify=False)
+            prefix_response.raise_for_status()
+            prefixes_data = prefix_response.json().get('results', [])
+
+            filtered_prefixes = []
+            for prefix in prefixes_data:
+                prefix_address = prefix['prefix']
+                prefix_site = prefix['site']['display'] if prefix.get('site') else 'No site'
+                prefix_tenant = prefix['tenant']['display'] if prefix.get('tenant') else 'No tenant'
+                prefix_status = prefix['status']['label'] if 'status' in prefix else 'Unknown'
+                prefix_description = prefix.get('description', 'No description')
+
+                if self.search_input and self.search_input not in prefix_address:
+                    continue
+
+                # Append each prefix entry with relevant information
+                filtered_prefixes.append({
+                    'prefix': prefix_address,
+                    'site': prefix_site,
+                    'tenant': prefix_tenant,
+                    'status': prefix_status,
+                    'description': prefix_description
+                })
+
+            # Emit filtered prefixes list
+            self.signals.success.emit(filtered_prefixes)
+
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
 
 class IPAddressManager(QMainWindow):
     def __init__(self, base_url, api_token):
@@ -332,6 +380,11 @@ class IPAddressManager(QMainWindow):
         self.vlan_tab = QWidget()
         self.tab_widget.addTab(self.vlan_tab, "VLANs")
         self.setup_vlan_tab()
+
+        # Create second tab (for Prefixes)
+        self.prefix_tab = QWidget()
+        self.tab_widget.addTab(self.prefix_tab, "Prefixes")
+        self.setup_prefix_tab()
 
         # Set main layout
         container = QWidget()
@@ -425,6 +478,31 @@ class IPAddressManager(QMainWindow):
         # Execute the worker in a separate thread
         self.thread_pool.start(worker)
 
+    def start_prefix_loading(self):
+        """Show the loading message when a task starts."""
+        self.prefix_loading_label.setVisible(True)  # Show 'Loading...' message
+
+    def stop_prefix_loading(self):
+        """Hide the loading message when the task completes."""
+        self.prefix_loading_label.setVisible(False)  # Hide 'Loading...' message
+
+    def start_prefix_import(self):
+        self.start_prefix_loading()
+        """Start the VLAN importing process in a separate thread."""
+        headers = {
+            'Authorization': 'Token ' + self.api_token,  # Replace with your API token
+        }
+
+        search_term = self.search_input.text()
+
+        # Create a worker for importing VLANs
+        worker = ImportPrefixWorker(self.base_url, headers, search_term)
+        worker.signals.success.connect(self.update_prefix_table)
+        worker.signals.error.connect(self.show_error)
+
+        # Execute the worker in a separate thread
+        self.thread_pool.start(worker)
+
     def update_table(self, vlans):
         """Update the table with imported VLANs."""
         self.vlan_table.setRowCount(0)  # Clear current table
@@ -444,10 +522,26 @@ class IPAddressManager(QMainWindow):
 
         self.stop_loading()
 
+    def update_prefix_table(self, prefixes):
+        """Update the table with imported prefixes."""
+        self.prefix_table.setRowCount(0)  # Clear the current table
+
+        for prefix in prefixes:
+            row_position = self.prefix_table.rowCount()
+            self.prefix_table.insertRow(row_position)
+
+            # Add data to table cells
+            self.prefix_table.setItem(row_position, 0, QTableWidgetItem(prefix['prefix']))      # Prefix column
+            self.prefix_table.setItem(row_position, 1, QTableWidgetItem(prefix['site']))        # Site column
+            self.prefix_table.setItem(row_position, 2, QTableWidgetItem(prefix['tenant']))      # Tenant column
+            self.prefix_table.setItem(row_position, 3, QTableWidgetItem(prefix['status']))      # Status column
+            self.prefix_table.setItem(row_position, 4, QTableWidgetItem(prefix['description'])) # Description column
+
+        self.stop_prefix_loading()
+
     def show_error(self, error_message):
         """Display an error message if the import fails."""
-        QMessageBox.critical(self, "Import Error", f"Failed to import VLANs: {error_message}")
-
+        QMessageBox.critical(self, "Import Error", f"Failed to import prefixes: {error_message}")
 
 
 
@@ -498,6 +592,35 @@ class IPAddressManager(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to fetch IP addresses: {e}")
 
+    def setup_prefix_tab(self):
+        layout = QVBoxLayout()
+
+        # Add button to import VLANs
+        self.search_label = QLabel("Search by name:")
+        self.search_input = QLineEdit()
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self.start_prefix_import)
+        self.import_prefix_button = QPushButton("Import Prefixes")
+        self.import_prefix_button.clicked.connect(self.start_prefix_import)
+
+        # Initialize the 'Loading...' label
+        self.prefix_loading_label = QLabel("Loading...", self)
+        self.prefix_loading_label.setAlignment(Qt.AlignCenter)
+        self.prefix_loading_label.setVisible(False)  # Hide initially
+
+        layout.addWidget(self.import_prefix_button)
+        layout.addWidget(self.search_label)
+        layout.addWidget(self.search_input)
+        layout.addWidget(self.search_button)
+        layout.addWidget(self.prefix_loading_label)
+
+        # Create a table to display VLANs and prefixes
+        self.prefix_table = QTableWidget()
+        self.prefix_table.setColumnCount(4)
+        self.prefix_table.setHorizontalHeaderLabels(["Prefix", "Site", "Tenant", "Status"])
+        layout.addWidget(self.prefix_table)
+
+        self.prefix_tab.setLayout(layout)
 
     def show_add_ip_dialog(self):
         dialog = AddIPDialog(self)
