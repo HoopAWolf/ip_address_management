@@ -6,7 +6,7 @@ import requests
 from .ml_models import SubnetPredictionModel
 import ipaddress
 
-prefix_list = 0
+prefix_list = []
 
 def is_public_ip(ip):
     try:
@@ -25,7 +25,7 @@ class LoginDialog(QDialog):
         # Labels and inputs
         self.url_label = QLabel("Base URL:")
         self.url_input = QLineEdit()
-        self.url_input.setText('https://demo.netbox.dev')
+        self.url_input.setText('https://netbox.cit.insea.io')
 
         self.token_label = QLabel("API Token:")
         self.token_input = QLineEdit()
@@ -88,6 +88,81 @@ class AddLocationDialog(QDialog):
             # Assuming AddIPDialog.groupList is a QComboBox or QListWidget
             self.parent().group_input.addItem(location)  # Add location to groupList in AddIPDialog
             self.close()  # Close dialog after adding
+
+class SubnetDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Find IP Range")
+        self.setGeometry(300, 300, 400, 200)
+        
+        # Create input fields
+        self.location_label = QLabel("Enter Location (Country):")
+        self.location_input = QLineEdit()
+        
+        self.host_label = QLabel("Enter Number of Hosts:")
+        self.host_input = QLineEdit()
+        
+        # Button to find available subnet
+        self.find_button = QPushButton("Find IP Range")
+        self.find_button.clicked.connect(self.find_available_subnet)
+        
+        # Layout setup
+        layout = QVBoxLayout()
+        layout.addWidget(self.location_label)
+        layout.addWidget(self.location_input)
+        layout.addWidget(self.host_label)
+        layout.addWidget(self.host_input)
+        layout.addWidget(self.find_button)
+        self.setLayout(layout)
+
+    def find_available_subnet(self):
+        global prefix_list
+        country = self.location_input.text()
+        
+        # Ensure num_hosts is an integer, and handle invalid input
+        try:
+            num_hosts = int(self.host_input.text())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number of hosts.")
+            return
+        
+        # Calculate the required subnet size and prefix length
+        required_prefix_length = 32 - (num_hosts + 2).bit_length()
+   
+        available_subnets = []
+
+        # Iterate through the prefix list to find available prefixes
+        for prefix_data in prefix_list:
+            if prefix_data['tenant'] == country:  # Filter by country
+                # Ensure 'prefix' is a list of valid IP prefixes
+                try:
+                    network = ipaddress.IPv4Network(prefix_data['prefix'])
+                    if network.prefixlen <= required_prefix_length:
+                        available_subnets.append({
+                            'subnet': network,
+                            'tenant': prefix_data['tenant'],
+                            'site': prefix_data['site'],
+                            'description': prefix_data['description']
+                        })
+                except ValueError:
+                    print(f"Skipping invalid IP prefix: {prefix_data['prefix']}")
+        
+        # Sort available subnets by size
+        available_subnets = sorted(available_subnets, key=lambda x: x['subnet'].prefixlen)
+
+        # Output result
+        if available_subnets:
+            selected_subnet = available_subnets[0]
+            subnet_info = (
+                f"Region: {selected_subnet['tenant']}\n"
+                f"Location: {selected_subnet['site']}\n"
+                f"Description: {selected_subnet['description']}\n"
+                f"IP Range: {selected_subnet['subnet']}\n"
+                f"Subnet Mask: {selected_subnet['subnet'].netmask}"
+            )
+            QMessageBox.information(self, "Available Subnet Found", subnet_info)
+        else:
+            QMessageBox.warning(self, "No Available Subnet", "No suitable subnet available for the given inputs.")
 
 class AddIPDialog(QDialog):
     def __init__(self, parent=None):
@@ -268,7 +343,6 @@ class ImportVLANWorker(QRunnable):
 
 
     def run(self):
-        global prefix_list
         """Run the importing process in a separate thread."""
         try:
             vlan_url = f'{self.base_url}/api/ipam/vlans/?limit=5000'
@@ -303,7 +377,6 @@ class ImportVLANWorker(QRunnable):
                     'description': vlan_description
                 })
 
-            prefix_list = filtered_vlans
             self.signals.success.emit(filtered_vlans)
 
         except Exception as e:
@@ -319,6 +392,7 @@ class ImportPrefixWorker(QRunnable):
         self.signals = WorkerSignals()
 
     def run(self):
+        global prefix_list
         try:
             # Define the URL for fetching prefixes
             prefix_url = f'{self.base_url}/api/ipam/prefixes/?limit=5000'
@@ -346,6 +420,8 @@ class ImportPrefixWorker(QRunnable):
                     'description': prefix_description
                 })
 
+            
+            prefix_list = filtered_prefixes
             # Emit filtered prefixes list
             self.signals.success.emit(filtered_prefixes)
 
@@ -409,6 +485,9 @@ class IPAddressManager(QMainWindow):
         self.add_button = QPushButton("Add IP Address")
         self.add_button.clicked.connect(self.show_add_ip_dialog)
 
+        self.find_avaialbe_ip_button = QPushButton("Find Available IP Addresses")
+        self.find_avaialbe_ip_button.clicked.connect(self.find_available_ip_address)
+
         # Set Layout
         layout = QVBoxLayout()
         layout.addWidget(self.search_address_label)
@@ -416,6 +495,7 @@ class IPAddressManager(QMainWindow):
         layout.addWidget(self.ip_table)
         layout.addWidget(self.update_button)
         layout.addWidget(self.add_button)
+        layout.addWidget(self.find_avaialbe_ip_button)
 
         container = QWidget()
         container.setLayout(layout)
@@ -621,6 +701,11 @@ class IPAddressManager(QMainWindow):
         layout.addWidget(self.prefix_table)
 
         self.prefix_tab.setLayout(layout)
+
+    def find_available_ip_address(self):
+        dialog = SubnetDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            return
 
     def show_add_ip_dialog(self):
         dialog = AddIPDialog(self)
