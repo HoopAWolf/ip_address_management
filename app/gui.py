@@ -1,6 +1,7 @@
 import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView, QComboBox
 from PyQt5.QtCore import Qt, QThreadPool, QRunnable, pyqtSignal, QObject
+from PyQt5.QtGui import QBrush, QColor
 from pymongo import MongoClient
 import requests
 from .ml_models import SubnetPredictionModel
@@ -383,7 +384,8 @@ class ImportVLANWorker(QRunnable):
             self.signals.error.emit(str(e))
 
 class ImportPrefixWorker(QRunnable):
-    """Worker thread for importing VLANs in the background."""
+    """Worker thread for importing prefixes in the background."""
+    
     def __init__(self, base_url, headers, search_input):
         super().__init__()
         self.base_url = base_url
@@ -411,22 +413,50 @@ class ImportPrefixWorker(QRunnable):
                 if self.search_input and self.search_input not in prefix_address:
                     continue
 
+                # Get available IPs within each prefix
+                available_ips = self.get_available_ips(prefix_address)
+
                 # Append each prefix entry with relevant information
                 filtered_prefixes.append({
                     'prefix': prefix_address,
                     'site': prefix_site,
                     'tenant': prefix_tenant,
                     'status': prefix_status,
-                    'description': prefix_description
+                    'description': prefix_description,
+                    'available_ips': available_ips
                 })
 
-            
             prefix_list = filtered_prefixes
             # Emit filtered prefixes list
             self.signals.success.emit(filtered_prefixes)
 
         except Exception as e:
             self.signals.error.emit(str(e))
+
+    def get_available_ips(self, prefix_address):
+        """Retrieve available IPs within the given prefix range."""
+        available_ips = []
+        try:
+            # Define the URL for fetching IP addresses in the prefix range
+            ip_url = f"{self.base_url}/api/ipam/ip-addresses/?parent={prefix_address}"
+            response = requests.get(ip_url, headers=self.headers, verify=False)
+            response.raise_for_status()
+            
+            # Fetch all used IP addresses
+            used_ips = [ip['address'].split('/')[0] for ip in response.json().get('results', [])]
+            used_ips = sorted(ipaddress.IPv4Address(ip) for ip in used_ips)  # Sort IPs for easier gap calculation
+            
+            # Calculate available IPs by finding gaps between used IPs
+            network = ipaddress.IPv4Network(prefix_address)
+            all_ips = list(network.hosts())  # Generate all usable IPs in the subnet
+
+            # Identify available IPs by excluding used ones
+            available_ips = [str(ip) for ip in all_ips if ip not in used_ips]
+
+        except Exception as e:
+            print(f"Error fetching IPs for prefix {prefix_address}: {str(e)}")
+        
+        return available_ips
 
 
 class IPAddressManager(QMainWindow):
@@ -612,12 +642,65 @@ class IPAddressManager(QMainWindow):
 
             # Add data to table cells
             self.prefix_table.setItem(row_position, 0, QTableWidgetItem(prefix['prefix']))      # Prefix column
-            self.prefix_table.setItem(row_position, 1, QTableWidgetItem(prefix['site']))        # Site column
-            self.prefix_table.setItem(row_position, 2, QTableWidgetItem(prefix['tenant']))      # Tenant column
-            self.prefix_table.setItem(row_position, 3, QTableWidgetItem(prefix['status']))      # Status column
-            self.prefix_table.setItem(row_position, 4, QTableWidgetItem(prefix['description'])) # Description column
 
+             # Set RGBA font color
+            custom_color = QColor(72, 126, 176, 255)  # (R, G, B, A) - Full opacity
+            site_item = QTableWidgetItem(prefix['site'])
+            site_item.setForeground(QBrush(custom_color))
+            self.prefix_table.setItem(row_position, 1, site_item)        # Site column
+
+             # Set RGBA font color
+            custom_color = QColor(234, 144, 61, 255)  # (R, G, B, A) - Full opacity
+            tenant_item = QTableWidgetItem(prefix['tenant'])
+            tenant_item.setForeground(QBrush(custom_color))
+            self.prefix_table.setItem(row_position, 2, tenant_item)      # Tenant column
+
+             # Set RGBA font color
+            custom_color = QColor(85, 170, 85, 255)  # (R, G, B, A) - Full opacity
+            status_item = QTableWidgetItem(prefix['status'])
+            status_item.setForeground(QBrush(custom_color))
+            self.prefix_table.setItem(row_position, 3, status_item)      # Status column
+
+            # Limit the displayed IPs to 20 and indicate more if available
+            available_ips = prefix.get('available_ips', [])
+            if len(available_ips) > 5:
+                displayed_ips = [f"{len(available_ips)} available"]
+            else:
+                displayed_ips = available_ips
+
+            # Format the IPs for multi-line display
+            ip_text = ", ".join(displayed_ips)
+            ip_item = QTableWidgetItem(ip_text)
+
+            # Set RGBA font color
+            custom_color = QColor(0, 242, 212, 255)  # (R, G, B, A) - Full opacity
+            ip_item.setForeground(QBrush(custom_color))
+
+            ip_item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)  # Align text to the top-left for readability
+            self.prefix_table.setItem(row_position, 4, ip_item)  # Available IPs column
+
+
+
+        self.populate_filter_combos()
         self.stop_prefix_loading()
+
+    def populate_filter_combos(self):
+        """Populate country and site combo boxes with unique values."""
+        global prefix_list
+
+        # Extract unique countries and sites from prefix_list
+        countries = sorted({prefix['tenant'] for prefix in prefix_list if prefix['tenant']})
+        sites = sorted({prefix['site'] for prefix in prefix_list if prefix['site']})
+
+        # Update country combo
+        self.country_combo.clear()
+        self.country_combo.addItem("All")  # Default option for no filter
+        self.country_combo.addItems(countries)
+
+        # Update site combo
+        self.site_combo.clear()
+        self.site_combo.addItem("All")    # Default option for no filter
+        self.site_combo.addItems(sites)
 
     def show_error(self, error_message):
         """Display an error message if the import fails."""
@@ -676,31 +759,65 @@ class IPAddressManager(QMainWindow):
         layout = QVBoxLayout()
 
         # Add button to import VLANs
-        self.search_label = QLabel("Search by name:")
+        self.search_label = QLabel("Search by IP:")
         self.search_input = QLineEdit()
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self.start_prefix_import)
         self.import_prefix_button = QPushButton("Import Prefixes")
         self.import_prefix_button.clicked.connect(self.start_prefix_import)
+        self.country_label = QLabel("Filter by Country:")
+        self.country_combo = QComboBox()
+        self.country_combo.setEditable(False)  # Prevent manual editing
+        self.country_combo.addItem("All")      # Default option for no filter
+
+        self.site_label = QLabel("Filter by Site:")
+        self.site_combo = QComboBox()
+        self.site_combo.setEditable(False)     # Prevent manual editing
+        self.site_combo.addItem("All")         # Default option for no filter
+
+        self.filter_button = QPushButton("Apply Filters")
+        self.filter_button.clicked.connect(self.apply_filters)
 
         # Initialize the 'Loading...' label
         self.prefix_loading_label = QLabel("Loading...", self)
         self.prefix_loading_label.setAlignment(Qt.AlignCenter)
         self.prefix_loading_label.setVisible(False)  # Hide initially
 
+
+
         layout.addWidget(self.import_prefix_button)
         layout.addWidget(self.search_label)
         layout.addWidget(self.search_input)
         layout.addWidget(self.search_button)
+        layout.addWidget(self.country_label)
+        layout.addWidget(self.country_combo)
+        layout.addWidget(self.site_label)
+        layout.addWidget(self.site_combo)
+        layout.addWidget(self.filter_button)
         layout.addWidget(self.prefix_loading_label)
 
         # Create a table to display VLANs and prefixes
         self.prefix_table = QTableWidget()
-        self.prefix_table.setColumnCount(4)
-        self.prefix_table.setHorizontalHeaderLabels(["Prefix", "Site", "Tenant", "Status"])
+        self.prefix_table.setColumnCount(5)
+        self.prefix_table.setHorizontalHeaderLabels(["Prefix", "Site", "Tenant", "Status", "Availble Addresses"])
         layout.addWidget(self.prefix_table)
 
         self.prefix_tab.setLayout(layout)
+
+    def apply_filters(self):
+        """Filter prefixes based on selected country and site."""
+        selected_country = self.country_combo.currentText()
+        selected_site = self.site_combo.currentText()
+
+        # Filter the prefix list
+        filtered_prefixes = [
+            prefix for prefix in prefix_list
+            if (selected_country == "All" or prefix['tenant'] == selected_country) and
+            (selected_site == "All" or prefix['site'] == selected_site)
+        ]
+
+        # Update the table with the filtered data
+        self.update_prefix_table(filtered_prefixes)
 
     def find_available_ip_address(self):
         dialog = SubnetDialog(self)
