@@ -143,8 +143,9 @@ class SubnetDialog(QDialog):
                             'subnet': network,
                             'tenant': prefix_data['tenant'],
                             'site': prefix_data['site'],
-                            'description': prefix_data['description']
-                        })
+                            'description': prefix_data['description'],
+                            'available_ips': prefix_data.get('available_ips', [])  # Include available IPs if present
+                    })
                 except ValueError:
                     print(f"Skipping invalid IP prefix: {prefix_data['prefix']}")
         
@@ -154,12 +155,17 @@ class SubnetDialog(QDialog):
         # Output result
         if available_subnets:
             selected_subnet = available_subnets[0]
+            available_ips_display = (
+                ", ".join(selected_subnet['available_ips'][:10])  # Display up to 10 IPs
+                + ("..." if len(selected_subnet['available_ips']) > 10 else "")  # Add ellipsis if more IPs exist
+            )
             subnet_info = (
                 f"Region: {selected_subnet['tenant']}\n"
                 f"Location: {selected_subnet['site']}\n"
                 f"Description: {selected_subnet['description']}\n"
                 f"IP Range: {selected_subnet['subnet']}\n"
-                f"Subnet Mask: {selected_subnet['subnet'].netmask}"
+                f"Subnet Mask: {selected_subnet['subnet'].netmask}\n"
+                f"Available IPs: {available_ips_display}"
             )
             QMessageBox.information(self, "Available Subnet Found", subnet_info)
         else:
@@ -378,6 +384,8 @@ class ImportVLANWorker(QRunnable):
                     'description': vlan_description
                 })
 
+                self.update_table(filtered_vlans)
+
             self.signals.success.emit(filtered_vlans)
 
         except Exception as e:
@@ -386,11 +394,12 @@ class ImportVLANWorker(QRunnable):
 class ImportPrefixWorker(QRunnable):
     """Worker thread for importing prefixes in the background."""
     
-    def __init__(self, base_url, headers, search_input):
+    def __init__(self, base_url, headers, search_input, updateFunc):
         super().__init__()
         self.base_url = base_url
         self.headers = headers
         self.search_input = search_input
+        self.updateFunc = updateFunc
         self.signals = WorkerSignals()
 
     def run(self):
@@ -425,6 +434,8 @@ class ImportPrefixWorker(QRunnable):
                     'description': prefix_description,
                     'available_ips': available_ips
                 })
+
+                self.updateFunc(filtered_prefixes)
 
             prefix_list = filtered_prefixes
             # Emit filtered prefixes list
@@ -506,7 +517,7 @@ class IPAddressManager(QMainWindow):
          # Create Widgets
         self.ip_table = QTableWidget()
         self.ip_table.setColumnCount(3)
-        self.ip_table.setHorizontalHeaderLabels(["Name", "IP Address", "Subnet"])
+        self.ip_table.setHorizontalHeaderLabels(["IP Address", "Tenant", "Available IP"])
         self.ip_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         self.update_button = QPushButton("Update List")
@@ -606,7 +617,7 @@ class IPAddressManager(QMainWindow):
         search_term = self.search_input.text()
 
         # Create a worker for importing VLANs
-        worker = ImportPrefixWorker(self.base_url, headers, search_term)
+        worker = ImportPrefixWorker(self.base_url, headers, search_term, self.update_prefix_table)
         worker.signals.success.connect(self.update_prefix_table)
         worker.signals.error.connect(self.show_error)
 
@@ -717,7 +728,7 @@ class IPAddressManager(QMainWindow):
             collection = db['ip_addresses']
 
             # Fetch IP addresses, group them by 'group'
-            ip_addresses = list(collection.find({}, {'name': 1, 'address': 1, 'subnet': 1, 'group': 1, '_id': 0}))
+            ip_addresses = list(collection.find({}, {'name': 1, 'address': 1, 'available_ips': 1, 'group': 1, '_id': 0}))
             ip_addresses.sort(key=lambda x: x['group'])  # Sort by group
 
             current_group = None
@@ -747,9 +758,9 @@ class IPAddressManager(QMainWindow):
 
                     # Add IP address details row
                     self.ip_table.insertRow(row_position)
-                    self.ip_table.setItem(row_position, 0, QTableWidgetItem(ip.get('name', 'No Name Found')))
-                    self.ip_table.setItem(row_position, 1, QTableWidgetItem(ip.get('address', 'No Address Found')))
-                    self.ip_table.setItem(row_position, 2, QTableWidgetItem(ip.get('subnet', 'No Subnet')))
+                    self.ip_table.setItem(row_position, 0, QTableWidgetItem(ip.get('address', 'No Address Found')))
+                    self.ip_table.setItem(row_position, 1, QTableWidgetItem(ip.get('name', 'No Tenant Found')))
+                    self.ip_table.setItem(row_position, 2, QTableWidgetItem(ip.get('available_ips', 'No Available IP Found')))
                     row_position += 1
 
         except Exception as e:
@@ -782,8 +793,6 @@ class IPAddressManager(QMainWindow):
         self.prefix_loading_label = QLabel("Loading...", self)
         self.prefix_loading_label.setAlignment(Qt.AlignCenter)
         self.prefix_loading_label.setVisible(False)  # Hide initially
-
-
 
         layout.addWidget(self.import_prefix_button)
         layout.addWidget(self.search_label)
