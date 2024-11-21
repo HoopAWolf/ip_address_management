@@ -435,8 +435,6 @@ class ImportPrefixWorker(QRunnable):
                     'available_ips': available_ips
                 })
 
-                self.updateFunc(filtered_prefixes)
-
             prefix_list = filtered_prefixes
             # Emit filtered prefixes list
             self.signals.success.emit(filtered_prefixes)
