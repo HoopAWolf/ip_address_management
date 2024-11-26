@@ -1,7 +1,7 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView, QComboBox
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialog, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget, QHeaderView, QComboBox, QHBoxLayout, QScrollArea
 from PyQt5.QtCore import Qt, QThreadPool, QRunnable, pyqtSignal, QObject
-from PyQt5.QtGui import QBrush, QColor
+from PyQt5.QtGui import QBrush, QColor, QIntValidator
 from pymongo import MongoClient
 import requests
 from .ml_models import SubnetPredictionModel
@@ -99,13 +99,24 @@ class SubnetDialog(QDialog):
         # Create input fields
         self.location_label = QLabel("Enter Location (Country):")
         self.location_input = QLineEdit()
-        
+
         self.host_label = QLabel("Enter Number of Hosts:")
         self.host_input = QLineEdit()
+
+        # Buttons
+        self.add_button = QPushButton("Add Department")
+        self.add_button.clicked.connect(self.add_department_entry)
         
         # Button to find available subnet
         self.find_button = QPushButton("Find IP Range")
         self.find_button.clicked.connect(self.find_available_subnet)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area_widget = QWidget()
+        self.scroll_area_layout = QVBoxLayout()
+        self.scroll_area_widget.setLayout(self.scroll_area_layout)
+        self.scroll_area.setWidget(self.scroll_area_widget)
+        self.scroll_area.setWidgetResizable(True)
         
         # Layout setup
         layout = QVBoxLayout()
@@ -113,12 +124,70 @@ class SubnetDialog(QDialog):
         layout.addWidget(self.location_input)
         layout.addWidget(self.host_label)
         layout.addWidget(self.host_input)
+        layout.addWidget(self.add_button)
+        layout.addWidget(self.scroll_area)
         layout.addWidget(self.find_button)
         self.setLayout(layout)
+
+        self.department_entries = []
+
+    def add_department_entry(self):
+            """Add a new department entry row."""
+            entry_layout = QHBoxLayout()
+
+            # Department name input
+            department_input = QLineEdit()
+            department_input.setPlaceholderText("Department Name")
+            entry_layout.addWidget(department_input)
+
+            # Host count input
+            host_input = QLineEdit()
+            host_input.setPlaceholderText("Host Count")
+            host_input.setValidator(QIntValidator(1, 100000))  # Only allow valid integer input
+            entry_layout.addWidget(host_input)
+
+            # Remove button
+            remove_button = QPushButton("Remove")
+            remove_button.clicked.connect(lambda: self.remove_department_entry(entry_layout))
+            entry_layout.addWidget(remove_button)
+
+            # Add the row to the scroll area
+            self.scroll_area_layout.addLayout(entry_layout)
+
+            # Store the entry
+            self.department_entries.append((department_input, host_input))
+
+    def remove_department_entry(self, entry_layout):
+        """Remove a department entry row."""
+            # Remove the row's widgets and layout
+        for i in reversed(range(entry_layout.count())):
+            widget = entry_layout.itemAt(i).widget()
+            if widget:
+                widget.deleteLater()
+        self.scroll_area_layout.removeItem(entry_layout)
+
+            # Remove the entry from the stored entries
+        self.department_entries = [
+            entry for entry in self.department_entries if entry[0].parent() != entry_layout
+        ]
 
     def find_available_subnet(self):
         global prefix_list
         country = self.location_input.text()
+        department_data = {}
+        for department_input, host_input in self.department_entries:
+            department_name = department_input.text().strip()
+            try:
+                host_count = int(host_input.text().strip())
+            except ValueError:
+                host_count = 0
+
+            if department_name and host_count > 0:
+                department_data[department_name] = host_count
+
+        if department_data:
+            self.department_data = department_data
+            print(self.department_data)
         
         # Ensure num_hosts is an integer, and handle invalid input
         try:
@@ -167,7 +236,30 @@ class SubnetDialog(QDialog):
                 f"Subnet Mask: {selected_subnet['subnet'].netmask}\n"
                 f"Available IPs: {available_ips_display}"
             )
-            QMessageBox.information(self, "Available Subnet Found", subnet_info)
+            # Input department requirements
+            department_requirements = self.department_data
+
+            if not department_requirements:
+                QMessageBox.warning(self, "No Departments", "Please provide department requirements.")
+                return
+
+            # Calculate the division
+            network = ipaddress.IPv4Network(selected_subnet['subnet'])
+            allocated_subnets = {}
+            for dept, num_hosts in sorted(department_requirements.items(), key=lambda x: x[1], reverse=True):
+                print(num_hosts)
+                required_prefix = 32 - (num_hosts + 2).bit_length()
+                for sub_network in network.subnets(new_prefix=required_prefix):
+                    if sub_network not in allocated_subnets.values():
+                        allocated_subnets[dept] = str(sub_network)
+                        network = network.address_exclude(sub_network)
+                        break
+                else:
+                    raise ValueError(f"Not enough space to allocate subnet for {dept}.")
+
+                # Display the results
+            allocation_info = "\n".join([f"{dept}: {subnet}" for dept, subnet in allocated_subnets.items()])
+            QMessageBox.information(self, "Subnet Allocation", allocation_info)
         else:
             QMessageBox.warning(self, "No Available Subnet", "No suitable subnet available for the given inputs.")
 
