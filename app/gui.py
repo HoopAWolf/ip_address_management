@@ -245,16 +245,29 @@ class SubnetDialog(QDialog):
 
             # Calculate the division
             network = ipaddress.IPv4Network(selected_subnet['subnet'])
+            print(selected_subnet['subnet'])
             allocated_subnets = {}
             for dept, num_hosts in sorted(department_requirements.items(), key=lambda x: x[1], reverse=True):
-                print(num_hosts)
-                required_prefix = 32 - (num_hosts + 2).bit_length()
+                print(f"Allocating for {dept}, {num_hosts} hosts")
+                required_prefix = 32 - (num_hosts + 2).bit_length()  # Calculate the required prefix
+                allocated = False  # Flag to check if allocation succeeded
+
+                # Iterate through subnets to find a suitable one
                 for sub_network in network.subnets(new_prefix=required_prefix):
                     if sub_network not in allocated_subnets.values():
-                        allocated_subnets[dept] = str(sub_network)
-                        network = network.address_exclude(sub_network)
+                        allocated_subnets[dept] = str(sub_network)  # Assign the subnet to the department
+                        print(f"Allocated {sub_network} to {dept}")
+
+                        # Exclude the allocated subnet from the remaining network space
+                        remaining_networks = list(network.address_exclude(sub_network))
+                        if remaining_networks:
+                            network = remaining_networks[0]  # Update to the first remaining network
+                        else:
+                            network = None  # No more space left
+                        allocated = True
                         break
-                else:
+
+                if not allocated:
                     raise ValueError(f"Not enough space to allocate subnet for {dept}.")
 
                 # Display the results
