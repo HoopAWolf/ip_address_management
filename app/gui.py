@@ -226,7 +226,7 @@ class SubnetDialog(QDialog):
             selected_subnet = available_subnets[0]
             available_ips_display = (
                 ", ".join(selected_subnet['available_ips'][:10])  # Display up to 10 IPs
-                + ("..." if len(selected_subnet['available_ips']) > 10 else "")  # Add ellipsis if more IPs exist
+                + ("...\n" if len(selected_subnet['available_ips']) > 10 else "\n")  # Add ellipsis if more IPs exist
             )
             subnet_info = (
                 f"Region: {selected_subnet['tenant']}\n"
@@ -234,7 +234,7 @@ class SubnetDialog(QDialog):
                 f"Description: {selected_subnet['description']}\n"
                 f"IP Range: {selected_subnet['subnet']}\n"
                 f"Subnet Mask: {selected_subnet['subnet'].netmask}\n"
-                f"Available IPs: {available_ips_display}"
+                f"Available IPs: {available_ips_display}\n"
             )
             # Input department requirements
             department_requirements = self.department_data
@@ -272,7 +272,8 @@ class SubnetDialog(QDialog):
 
                 # Display the results
             allocation_info = "\n".join([f"{dept}: {subnet}" for dept, subnet in allocated_subnets.items()])
-            QMessageBox.information(self, "Subnet Allocation", allocation_info)
+            subnet_info = subnet_info + allocation_info
+            QMessageBox.information(self, "Subnet Allocation", subnet_info)
         else:
             QMessageBox.warning(self, "No Available Subnet", "No suitable subnet available for the given inputs.")
 
