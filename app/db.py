@@ -2,8 +2,8 @@ import pynetbox
 from pymongo import MongoClient
 
 # Connect to NetBox API
-NETBOX_URL = 'https://netbox.cit.insea.io/'
-NETBOX_API_TOKEN = '0095f9fb88dc49741dac2c5717bcf1e6ea887419'
+NETBOX_URL = 'https://demo.netbox.dev/'
+NETBOX_API_TOKEN = 'daf5b004cd863cedd7da7d7311fc98ec1638560b'
 
 netbox = pynetbox.api(NETBOX_URL, token=NETBOX_API_TOKEN)
 

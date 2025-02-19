@@ -597,11 +597,6 @@ class IPAddressManager(QMainWindow):
         self.tab_widget.addTab(self.ip_tab, "IP Addresses")
         self.setup_ip_tab()
 
-        # Create second tab (for VLANs)
-        self.vlan_tab = QWidget()
-        self.tab_widget.addTab(self.vlan_tab, "VLANs")
-        self.setup_vlan_tab()
-
         # Create second tab (for Prefixes)
         self.prefix_tab = QWidget()
         self.tab_widget.addTab(self.prefix_tab, "Prefixes")
